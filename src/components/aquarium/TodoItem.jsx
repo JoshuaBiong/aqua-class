@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 
-export function TodoItem({ todo, colors, isTeacher, userId, onToggle, onSubmitFile, onRemoveFile, getSignedUrl }) {
+export function TodoItem({ todo, colors, isTeacher, userId, onToggle, onSubmitFile, onRemoveFile, onDeleteTodo, getSignedUrl }) {
   const [dragging, setDragging]   = useState(false);
   const [uploading, setUploading] = useState(false);
   const [expanded, setExpanded]   = useState(false);
@@ -59,6 +59,9 @@ export function TodoItem({ todo, colors, isTeacher, userId, onToggle, onSubmitFi
         <div style={{flexShrink:0,padding:"2px 10px",borderRadius:50,fontSize:10,fontWeight:700,background:todo.done?"rgba(82,183,136,.15)":"rgba(255,209,102,.1)",border:`1px solid ${todo.done?"rgba(82,183,136,.3)":"rgba(255,209,102,.2)"}`,color:todo.done?"var(--kelp-light)":"var(--gold)"}}>
           {todo.done?"✓ Done":"Pending"}
         </div>
+        {isTeacher && (
+          <button onClick={(e)=>{e.stopPropagation();onDeleteTodo();}} title="Delete todo" style={{width:24,height:24,borderRadius:"50%",border:"none",background:"rgba(255,107,107,.12)",color:"rgba(255,100,100,.7)",cursor:"pointer",fontSize:12,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,transition:"all .2s"}}>🗑️</button>
+        )}
       </div>
 
       {/* Submitted files */}

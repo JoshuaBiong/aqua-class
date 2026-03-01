@@ -4,7 +4,6 @@ import { supabase } from "../../lib/supabase";
 import { FISH_COLORS, labelSt } from "../../lib/constants";
 import { FishSim } from "../../lib/FishSim";
 import { calcSize, drawOceanBg, drawSeaweed, drawCage, drawFish } from "../../lib/canvasUtils";
-import { TopNav } from "../shared/TopNav";
 import { Loader } from "../shared/Loader";
 import { Modal } from "../shared/Modal";
 import { TodoItem } from "./TodoItem";
@@ -18,11 +17,12 @@ export function AquariumRoom({ userId, userRole }) {
   const roomRef    = useRef(null);
 
   const [room, setRoom]             = useState(null);
-  const [profile, setProfile]       = useState(null);
   const [loading, setLoading]       = useState(true);
+  const [loadError, setLoadError]   = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [modalAsgnId, setModalAsgnId] = useState(null);
   const [cursor, setCursor]         = useState({x:-100,y:-100});
+  const [actionError, setActionError] = useState(null);
 
   // Teacher form state
   const [showNewAsgn, setShowNewAsgn] = useState(false);
@@ -37,25 +37,36 @@ export function AquariumRoom({ userId, userRole }) {
 
   const isTeacher = userRole === "teacher";
 
+  // Auto-dismiss action errors after 4 seconds
+  useEffect(() => {
+    if (!actionError) return;
+    const t = setTimeout(() => setActionError(null), 4000);
+    return () => clearTimeout(t);
+  }, [actionError]);
+
   // ── Load room + realtime ────────────────────────────────────────────────────
   const loadRoom = useCallback(async () => {
     try {
-      const { data: prof } = await supabase.from("profiles").select("*").eq("id",userId).maybeSingle();
-      if (prof) setProfile(prof);
+      setLoadError(null);
       const { data, error } = await supabase
         .from("rooms")
         .select(`*, assignments(*, todos(*, submissions(*)))`)
         .eq("id", roomId)
         .maybeSingle();
       if (error) throw error;
-      console.log("Room loaded:", data);
-      if (data) { setRoom(data); roomRef.current = data; }
+      if (data) {
+        setRoom(data);
+        roomRef.current = data;
+      } else {
+        setLoadError("not_found");
+      }
     } catch (err) {
       console.error("Error loading room:", err);
+      setLoadError(err.message || "Failed to load room");
     } finally {
       setLoading(false);
     }
-  }, [roomId, userId]);
+  }, [roomId]);
 
   useEffect(() => { loadRoom(); }, [loadRoom]);
 
@@ -76,7 +87,7 @@ export function AquariumRoom({ userId, userRole }) {
     canvas.width = window.innerWidth; canvas.height = window.innerHeight;
     const cw=canvas.width,ch=canvas.height;
     simRef.current = { mouseX:cw/2,mouseY:ch/2,mouseActive:false,mouseTimer:null,cageArea:{x:cw-220,y:ch-190,w:200,h:165},fishMap:new Map() };
-    const onResize=()=>{canvas.width=window.innerWidth;canvas.height=window.innerHeight;simRef.current.cageArea={x:canvas.width-220,y:canvas.height-190,w:200,h:165};};
+    const onResize=()=>{canvas.width=window.innerWidth;canvas.height=window.innerHeight;if(simRef.current)simRef.current.cageArea={x:canvas.width-220,y:canvas.height-190,w:200,h:165};};
     window.addEventListener("resize",onResize);
     return ()=>window.removeEventListener("resize",onResize);
   }, []);
@@ -86,15 +97,14 @@ export function AquariumRoom({ userId, userRole }) {
     if (!simRef.current || !room) return;
     const { fishMap } = simRef.current;
     const canvas = canvasRef.current;
-    console.log("Syncing fish for room:", room.name, "Assignments:", room.assignments.length);
-    room.assignments.forEach(a => {
+    const assignments = room.assignments || [];
+    assignments.forEach(a => {
       if (!fishMap.has(a.id)) {
-        console.log("Creating new fish for:", a.name);
         fishMap.set(a.id, new FishSim(canvas?.width || window.innerWidth, canvas?.height || window.innerHeight));
       }
     });
     fishMap.forEach((_, id) => {
-      if (!room.assignments.find(a => a.id === id)) fishMap.delete(id);
+      if (!assignments.find(a => a.id === id)) fishMap.delete(id);
     });
   }, [room]);
 
@@ -141,9 +151,10 @@ export function AquariumRoom({ userId, userRole }) {
       const{mouseX,mouseY,mouseActive,cageArea,fishMap}=simRef.current;
       const r=roomRef.current,cw=canvas.width,ch=canvas.height;
       ctx.clearRect(0,0,cw,ch);drawOceanBg(ctx,cw,ch,ts);drawSeaweed(ctx,cw,ch,ts);
-      const doneCnt=(r.assignments || []).filter(a=>{const t=a.todos||[];return t.length>0&&t.every(x=>x.done);}).length;
+      const assignments = r.assignments || [];
+      const doneCnt=assignments.filter(a=>{const t=a.todos||[];return t.length>0&&t.every(x=>x.done);}).length;
       drawCage(ctx,cageArea,doneCnt);
-      (r.assignments || []).forEach(asgn=>{
+      assignments.forEach(asgn=>{
         const fish=fishMap.get(asgn.id);if(!fish)return;
         const todos=asgn.todos||[];
         const done=todos.filter(t=>t.done).length,size=calcSize(todos.length,done);
@@ -167,41 +178,64 @@ export function AquariumRoom({ userId, userRole }) {
 
   // ── Teacher actions ──────────────────────────────────────────────────────────
   const addAssignment = async () => {
-    if(!newAsgnName.trim())return;setSaving(true);
-    await supabase.from("assignments").insert({room_id:roomId,name:newAsgnName.trim(),color_index:newAsgnColor,due_date:newAsgnDue||null});
-    setSaving(false);setNewAsgnName("");setNewAsgnDue("");setShowNewAsgn(false);
+    if(!newAsgnName.trim()){setActionError("Assignment name is required.");return;}
+    setSaving(true);setActionError(null);
+    const { error } = await supabase.from("assignments").insert({room_id:roomId,name:newAsgnName.trim(),color_index:newAsgnColor,due_date:newAsgnDue||null});
+    setSaving(false);
+    if (error) { setActionError("Failed to create assignment: " + error.message); return; }
+    setNewAsgnName("");setNewAsgnDue("");setShowNewAsgn(false);
   };
 
   const addTodo = async () => {
-    if(!newTodoTitle.trim()||!todoAsgnId)return;setSaving(true);
-    await supabase.from("todos").insert({assignment_id:todoAsgnId,title:newTodoTitle.trim(),notes:newTodoNotes.trim()});
-    setSaving(false);setNewTodoTitle("");setNewTodoNotes("");
+    if(!newTodoTitle.trim()||!todoAsgnId){setActionError("Select an assignment and enter a title.");return;}
+    setSaving(true);setActionError(null);
+    const { error } = await supabase.from("todos").insert({assignment_id:todoAsgnId,title:newTodoTitle.trim(),notes:newTodoNotes.trim()});
+    setSaving(false);
+    if (error) { setActionError("Failed to add todo: " + error.message); return; }
+    setNewTodoTitle("");setNewTodoNotes("");
   };
 
   const addModalTodo = async () => {
     if(!modalTodoInput.trim()||!modalAsgnId)return;
-    await supabase.from("todos").insert({assignment_id:modalAsgnId,title:modalTodoInput.trim(),notes:""});
+    setActionError(null);
+    const { error } = await supabase.from("todos").insert({assignment_id:modalAsgnId,title:modalTodoInput.trim(),notes:""});
+    if (error) { setActionError("Failed to add todo: " + error.message); return; }
     setModalTodoInput("");
   };
 
   const toggleTodo = async (todoId, currentDone) => {
-    await supabase.from("todos").update({done:!currentDone}).eq("id",todoId);
+    const { error } = await supabase.from("todos").update({done:!currentDone}).eq("id",todoId);
+    if (error) setActionError("Failed to update todo: " + error.message);
+  };
+
+  const deleteAssignment = async (asgnId) => {
+    if (!confirm("Delete this assignment and all its todos? This cannot be undone.")) return;
+    setActionError(null);
+    const { error } = await supabase.from("assignments").delete().eq("id", asgnId);
+    if (error) { setActionError("Failed to delete assignment: " + error.message); return; }
+    setModalAsgnId(null);
+  };
+
+  const deleteTodo = async (todoId) => {
+    setActionError(null);
+    const { error } = await supabase.from("todos").delete().eq("id", todoId);
+    if (error) setActionError("Failed to delete todo: " + error.message);
   };
 
   // ── Student file upload ──────────────────────────────────────────────────────
   const submitFile = async (todoId, file) => {
-    if(file.size>10*1024*1024){alert("Max 10MB");return;}
+    if(file.size>10*1024*1024){setActionError("File too large. Max 10MB.");return;}
     const path=`${userId}/${todoId}/${Date.now()}-${file.name}`;
     const{error:upErr}=await supabase.storage.from("submissions").upload(path,file);
-    if(upErr){console.error(upErr);return;}
-    await supabase.from("submissions").insert({todo_id:todoId,student_id:userId,file_name:file.name,file_type:file.type,file_size:file.size,storage_path:path});
+    if(upErr){setActionError("Upload failed: " + upErr.message);return;}
+    const { error } = await supabase.from("submissions").insert({todo_id:todoId,student_id:userId,file_name:file.name,file_type:file.type,file_size:file.size,storage_path:path});
+    if (error) { setActionError("Failed to save submission: " + error.message); return; }
     await supabase.from("todos").update({done:true}).eq("id",todoId);
   };
 
   const removeFile = async (submissionId, storagePath, todoId) => {
     await supabase.storage.from("submissions").remove([storagePath]);
     await supabase.from("submissions").delete().eq("id",submissionId);
-    // un-done todo if no more submissions
     const{data:remaining}=await supabase.from("submissions").select("id").eq("todo_id",todoId);
     if((remaining||[]).length===0) await supabase.from("todos").update({done:false}).eq("id",todoId);
   };
@@ -211,19 +245,69 @@ export function AquariumRoom({ userId, userRole }) {
     return data?.signedUrl;
   };
 
-  if (loading || !room) return (
-    <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#0a2540"}}>
-      <Loader text="Diving into the aquarium..." />
-    </div>
-  );
+  // ── Early returns for loading / error / not found ───────────────────────────
+  if (loading) {
+    return (
+      <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#0a2540"}}>
+        <Loader text="Diving into the aquarium..." />
+      </div>
+    );
+  }
 
-  const currentModalAsgn = room.assignments.find(a=>a.id===modalAsgnId);
+  if (loadError === "not_found") {
+    return (
+      <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"linear-gradient(160deg,#061524,#0d2d50,#0a1f3a)"}}>
+        <div className="glass-card" style={{padding:48,textAlign:"center",maxWidth:420}}>
+          <div style={{fontSize:56,marginBottom:16}}>🔍</div>
+          <h2 style={{fontFamily:"'Baloo 2',cursive",color:"var(--ocean-pale)",marginBottom:8}}>Aquarium not found</h2>
+          <p style={{color:"rgba(168,216,234,.6)",fontSize:14,marginBottom:24}}>This aquarium doesn't exist or you don't have permission to view it.</p>
+          <button className="ocean-btn btn-primary" onClick={()=>navigate(isTeacher?"/teacher":"/student")}>← Back to Dashboard</button>
+        </div>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"linear-gradient(160deg,#061524,#0d2d50,#0a1f3a)"}}>
+        <div className="glass-card" style={{padding:48,textAlign:"center",maxWidth:420}}>
+          <div style={{fontSize:56,marginBottom:16}}>⚠️</div>
+          <h2 style={{fontFamily:"'Baloo 2',cursive",color:"var(--ocean-pale)",marginBottom:8}}>Something went wrong</h2>
+          <p style={{color:"rgba(168,216,234,.6)",fontSize:14,marginBottom:24}}>{loadError}</p>
+          <div style={{display:"flex",gap:12,justifyContent:"center"}}>
+            <button className="ocean-btn btn-primary" onClick={()=>{setLoading(true);loadRoom();}}>🔄 Retry</button>
+            <button className="ocean-btn btn-ghost" onClick={()=>navigate(isTeacher?"/teacher":"/student")}>← Back</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!room) {
+    return (
+      <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#0a2540"}}>
+        <Loader text="Loading aquarium..." />
+      </div>
+    );
+  }
+
+  const currentModalAsgn = room.assignments.find(a=>a.id===modalAsgnId) || null;
   const colors = currentModalAsgn ? FISH_COLORS[currentModalAsgn.color_index%FISH_COLORS.length] : null;
 
   return (
     <div style={{position:"relative",width:"100vw",height:"100vh",overflow:"hidden",cursor:"none"}}>
       <div style={{position:"fixed",left:cursor.x,top:cursor.y,width:18,height:18,borderRadius:"50%",background:"rgba(168,216,234,.3)",border:"2px solid rgba(168,216,234,.7)",pointerEvents:"none",transform:"translate(-50%,-50%)",zIndex:9999}}/>
       <canvas ref={canvasRef} style={{position:"absolute",top:0,left:0}} onClick={handleCanvasClick}/>
+
+      {/* Action error toast */}
+      {actionError && (
+        <div style={{position:"fixed",top:72,left:"50%",transform:"translateX(-50%)",zIndex:200,animation:"fadeUp .3s ease forwards"}}>
+          <div className="err-box" style={{display:"flex",alignItems:"center",gap:10,padding:"10px 18px",whiteSpace:"nowrap"}}>
+            <span>{actionError}</span>
+            <button onClick={()=>setActionError(null)} style={{background:"none",border:"none",color:"#ff9a9a",cursor:"pointer",fontSize:16,padding:0}}>✕</button>
+          </div>
+        </div>
+      )}
 
       {/* Top bar */}
       <div style={{position:"fixed",top:0,left:0,right:0,height:56,background:"rgba(6,21,36,.85)",backdropFilter:"blur(16px)",borderBottom:"1px solid rgba(168,216,234,.1)",display:"flex",alignItems:"center",padding:"0 20px",gap:16,zIndex:50}}>
@@ -302,7 +386,7 @@ export function AquariumRoom({ userId, userRole }) {
           </div>
           <div style={{marginBottom:14}}>
             <label style={labelSt}>Due Date (optional)</label>
-            <input className="input-ocean" value={newAsgnDue} onChange={e=>setNewAsgnDue(e.target.value)} placeholder="e.g. Mar 15, 2026"/>
+            <input className="input-ocean" type="date" value={newAsgnDue} onChange={e=>setNewAsgnDue(e.target.value)} />
           </div>
           <div style={{marginBottom:24}}>
             <label style={labelSt}>Fish Color</label>
@@ -324,10 +408,13 @@ export function AquariumRoom({ userId, userRole }) {
         <Modal onClose={()=>setModalAsgnId(null)} title="">
           <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:20}}>
             <div style={{width:52,height:52,borderRadius:"50%",background:`${colors.main}22`,border:`2px solid ${colors.main}66`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:24,flexShrink:0}}>🐟</div>
-            <div>
+            <div style={{flex:1}}>
               <div style={{fontSize:11,fontWeight:700,color:colors.main,textTransform:"uppercase",letterSpacing:".07em",marginBottom:3}}>Assignment</div>
               <h3 style={{fontFamily:"'Baloo 2',cursive",fontSize:22,color:"var(--ocean-pale)",lineHeight:1.2}}>{currentModalAsgn.name}</h3>
             </div>
+            {isTeacher && (
+              <button onClick={()=>deleteAssignment(currentModalAsgn.id)} title="Delete assignment" style={{width:36,height:36,borderRadius:"50%",border:"none",background:"rgba(255,107,107,.15)",color:"var(--coral)",cursor:"pointer",fontSize:16,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,transition:"background .2s"}}>🗑️</button>
+            )}
           </div>
 
           <div style={{display:"flex",gap:10,marginBottom:20,flexWrap:"wrap"}}>
@@ -356,6 +443,7 @@ export function AquariumRoom({ userId, userRole }) {
                 onToggle={()=>toggleTodo(todo.id,todo.done)}
                 onSubmitFile={(file)=>submitFile(todo.id,file)}
                 onRemoveFile={(subId,path)=>removeFile(subId,path,todo.id)}
+                onDeleteTodo={()=>deleteTodo(todo.id)}
                 getSignedUrl={getSignedUrl}
               />
             ))}

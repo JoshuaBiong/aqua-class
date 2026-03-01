@@ -8,17 +8,27 @@ export function StudentDashboard({ user }) {
   const navigate = useNavigate();
   const [rooms, setRooms]     = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
   const [joinCode, setJoinCode] = useState("");
   const [joinErr, setJoinErr]  = useState("");
   const [joining, setJoining]  = useState(false);
 
   const loadRooms = useCallback(async () => {
-    const { data } = await supabase
-      .from("room_members")
-      .select(`room_id, rooms(*, profiles!rooms_teacher_id_fkey(name,avatar), assignments(id, todos(id,done)))`)
-      .eq("student_id", user.id);
-    setRooms((data||[]).map(d=>d.rooms).filter(Boolean));
-    setLoading(false);
+    try {
+      setLoadError(null);
+      const { data, error } = await supabase
+        .from("room_members")
+        .select(`room_id, rooms(*, profiles!rooms_teacher_id_fkey(name,avatar), assignments(id, todos(id,done)))`)
+        .eq("student_id", user.id);
+      if (error) throw error;
+      setRooms((data||[]).map(d=>d.rooms).filter(Boolean));
+    } catch (err) {
+      console.error("loadRooms error:", err);
+      setLoadError(err.message || "Failed to load rooms");
+      setRooms([]);
+    } finally {
+      setLoading(false);
+    }
   }, [user.id]);
 
   useEffect(() => { loadRooms(); }, [loadRooms]);
@@ -64,7 +74,14 @@ export function StudentDashboard({ user }) {
           {joinErr && <p style={{fontSize:13,color:"var(--coral-soft)",marginTop:8}}>{joinErr}</p>}
         </div>
 
-        {loading ? <Loader text="Checking your aquariums..." /> : rooms.length===0 ? (
+        {loading ? <Loader text="Checking your aquariums..." /> : loadError ? (
+          <div className="glass-card" style={{padding:50,textAlign:"center"}}>
+            <div style={{fontSize:48,marginBottom:14}}>⚠️</div>
+            <h3 style={{color:"var(--ocean-pale)",marginBottom:8}}>Failed to load aquariums</h3>
+            <p style={{color:"rgba(168,216,234,.5)",marginBottom:20,fontSize:14}}>{loadError}</p>
+            <button className="ocean-btn btn-primary" onClick={()=>{setLoading(true);loadRooms();}}>🔄 Retry</button>
+          </div>
+        ) : rooms.length===0 ? (
           <div className="glass-card" style={{padding:50,textAlign:"center"}}>
             <div style={{fontSize:56,marginBottom:14}}>🐠</div>
             <h3 style={{color:"var(--ocean-pale)",marginBottom:8}}>No aquariums yet</h3>

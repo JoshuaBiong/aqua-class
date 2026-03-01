@@ -21,9 +21,28 @@ function LoadingScreen() {
   );
 }
 
+function ProfileErrorScreen({ onRetry, onSignOut }) {
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0a2540" }}>
+      <div className="glass-card" style={{ padding: 40, textAlign: "center", maxWidth: 400 }}>
+        <div style={{ fontSize: 48, marginBottom: 16 }}>🐠</div>
+        <h3 style={{ color: "var(--ocean-pale)", marginBottom: 8 }}>Profile not found</h3>
+        <p style={{ color: "rgba(168,216,234,.6)", fontSize: 14, marginBottom: 20 }}>
+          We couldn't load your profile. This can happen if your account wasn't set up properly.
+        </p>
+        <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
+          <button className="ocean-btn btn-primary" onClick={onRetry}>🔄 Retry</button>
+          <button className="ocean-btn btn-ghost" onClick={onSignOut}>Sign Out</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AppRoutes() {
   const [session, setSession] = useState(undefined); // undefined = not yet checked
   const [profile, setProfile] = useState(null);
+  const [profileLoaded, setProfileLoaded] = useState(false);
   const [authError, setAuthError] = useState(null);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
@@ -40,18 +59,38 @@ function AppRoutes() {
       if (error) {
         console.error("loadProfile error:", error);
         setAuthError("Could not load profile: " + error.message);
+        setProfileLoaded(true);
         return null;
       }
       if (data) {
         setProfile(data);
+        setProfileLoaded(true);
         return data;
       }
+      setProfileLoaded(true);
       return null;
     } catch (err) {
       console.error("loadProfile exception:", err);
       setAuthError("Could not load profile: " + err.message);
+      setProfileLoaded(true);
       return null;
     }
+  }, []);
+
+  const handleRetryProfile = useCallback(async () => {
+    if (!session) return;
+    setAuthError(null);
+    setProfileLoaded(false);
+    await loadProfile(session.user.id);
+  }, [session, loadProfile]);
+
+  const handleSignOut = useCallback(async () => {
+    await supabase.auth.signOut();
+    setSession(null);
+    setProfile(null);
+    setProfileLoaded(false);
+    setAuthError(null);
+    navRef.current("/");
   }, []);
 
   useEffect(() => {
@@ -93,6 +132,7 @@ function AppRoutes() {
         }
       } else {
         setProfile(null);
+        setProfileLoaded(false);
         if (mounted) setLoading(false);
         navRef.current("/");
       }
@@ -114,12 +154,20 @@ function AppRoutes() {
         <div style={{ fontSize: 48, marginBottom: 16 }}>⚠️</div>
         <h3 style={{ color: "var(--ocean-pale)", marginBottom: 8 }}>Something went wrong</h3>
         <p style={{ color: "rgba(168,216,234,.6)", fontSize: 14, marginBottom: 20 }}>{authError}</p>
-        <button className="ocean-btn btn-primary" onClick={() => { setAuthError(null); setLoading(true); window.location.reload(); }}>
-          Try Again
-        </button>
+        <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
+          <button className="ocean-btn btn-primary" onClick={() => { setAuthError(null); setLoading(true); window.location.reload(); }}>
+            Try Again
+          </button>
+          <button className="ocean-btn btn-ghost" onClick={handleSignOut}>Sign Out</button>
+        </div>
       </div>
     </div>
   );
+
+  // Session exists but profile couldn't be found — show actionable error instead of infinite spinner
+  if (session && profileLoaded && !profile) {
+    return <ProfileErrorScreen onRetry={handleRetryProfile} onSignOut={handleSignOut} />;
+  }
 
   return (
     <Routes>

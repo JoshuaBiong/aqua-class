@@ -27,7 +27,15 @@ export function LoginPage({ loadProfile }) {
         const { data, error } = await supabase.auth.signUp({ email, password, options:{ data:{ name, role } } });
         if (error) { setErr(error.message); return; }
         if (data.user) {
-          await supabase.from("profiles").insert({ id:data.user.id, name:name.trim(), role, avatar:role==="teacher"?"🧑‍🏫":"🧑‍🎓" });
+          // If identities is empty, the email is already registered
+          if (data.user.identities && data.user.identities.length === 0) {
+            setErr("This email is already registered. Please sign in instead.");
+            return;
+          }
+          await supabase.from("profiles").upsert(
+            { id: data.user.id, name: name.trim(), role, avatar: role === "teacher" ? "🧑‍🏫" : "🧑‍🎓", email: email.toLowerCase() },
+            { onConflict: "id" }
+          );
           const prof = await loadProfile(data.user.id);
           if (prof) navigate(prof.role === "teacher" ? "/teacher" : "/student");
         } else {
