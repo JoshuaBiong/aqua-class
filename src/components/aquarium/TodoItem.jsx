@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 
-export function TodoItem({ todo, colors, isTeacher, userId, onToggle, onSubmitFile, onRemoveFile, onDeleteTodo, getSignedUrl }) {
+export function TodoItem({ todo, colors, isTeacher, userId, onToggle, onSubmitFile, onRemoveFile, onDeleteTodo, getSignedUrl, completionCount, memberCount }) {
   const [dragging, setDragging]   = useState(false);
   const [uploading, setUploading] = useState(false);
   const [expanded, setExpanded]   = useState(false);
@@ -44,7 +44,7 @@ export function TodoItem({ todo, colors, isTeacher, userId, onToggle, onSubmitFi
   return (
     <div style={{borderBottom:"1px solid rgba(168,216,234,.08)",paddingBottom:12,marginBottom:4}}>
       <div style={{display:"flex",alignItems:"flex-start",gap:12,paddingTop:10}}>
-        <div onClick={isTeacher?onToggle:undefined} style={{width:20,height:20,borderRadius:"50%",flexShrink:0,border:`2px solid ${colors.main}`,marginTop:2,background:todo.done?colors.main:"transparent",display:"flex",alignItems:"center",justifyContent:"center",cursor:isTeacher?"pointer":"default",fontSize:11,color:"white",transition:"all .2s",boxShadow:todo.done?`0 0 8px ${colors.main}66`:"none"}}>
+        <div onClick={isTeacher ? undefined : onToggle} style={{width:20,height:20,borderRadius:"50%",flexShrink:0,border:`2px solid ${colors.main}`,marginTop:2,background:todo.done?colors.main:"transparent",display:"flex",alignItems:"center",justifyContent:"center",cursor:isTeacher?"default":"pointer",fontSize:11,color:"white",transition:"all .2s",boxShadow:todo.done?`0 0 8px ${colors.main}66`:"none"}}>
           {todo.done?"✓":""}
         </div>
         <div style={{flex:1}}>
@@ -56,9 +56,15 @@ export function TodoItem({ todo, colors, isTeacher, userId, onToggle, onSubmitFi
             </button>
           )}
         </div>
-        <div style={{flexShrink:0,padding:"2px 10px",borderRadius:50,fontSize:10,fontWeight:700,background:todo.done?"rgba(82,183,136,.15)":"rgba(255,209,102,.1)",border:`1px solid ${todo.done?"rgba(82,183,136,.3)":"rgba(255,209,102,.2)"}`,color:todo.done?"var(--kelp-light)":"var(--gold)"}}>
-          {todo.done?"✓ Done":"Pending"}
-        </div>
+        {isTeacher && memberCount > 0 ? (
+          <div style={{flexShrink:0,padding:"2px 10px",borderRadius:50,fontSize:10,fontWeight:700,background:completionCount>=memberCount?"rgba(82,183,136,.15)":"rgba(255,209,102,.1)",border:`1px solid ${completionCount>=memberCount?"rgba(82,183,136,.3)":"rgba(255,209,102,.2)"}`,color:completionCount>=memberCount?"var(--kelp-light)":"var(--gold)"}}>
+            {completionCount}/{memberCount} done
+          </div>
+        ) : (
+          <div style={{flexShrink:0,padding:"2px 10px",borderRadius:50,fontSize:10,fontWeight:700,background:todo.done?"rgba(82,183,136,.15)":"rgba(255,209,102,.1)",border:`1px solid ${todo.done?"rgba(82,183,136,.3)":"rgba(255,209,102,.2)"}`,color:todo.done?"var(--kelp-light)":"var(--gold)"}}>
+            {todo.done?"✓ Done":"Pending"}
+          </div>
+        )}
         {isTeacher && (
           <button onClick={(e)=>{e.stopPropagation();onDeleteTodo();}} title="Delete todo" style={{width:24,height:24,borderRadius:"50%",border:"none",background:"rgba(255,107,107,.12)",color:"rgba(255,100,100,.7)",cursor:"pointer",fontSize:12,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,transition:"all .2s"}}>🗑️</button>
         )}

@@ -184,7 +184,33 @@ create policy "Teachers can view submissions in their rooms"
 create policy "Students can manage their own submissions"
   on submissions for all using (auth.uid() = student_id);
 
--- ─── 7. Storage Bucket ───────────────────────────────────────────────────────
+-- ─── 7. Student Completions ──────────────────────────────────────────────────
+-- Per-student completion tracking for todos
+create table if not exists student_completions (
+  id          uuid primary key default gen_random_uuid(),
+  todo_id     uuid not null references todos(id) on delete cascade,
+  student_id  uuid not null references profiles(id) on delete cascade,
+  created_at  timestamptz default now(),
+  unique (todo_id, student_id)
+);
+
+alter table student_completions enable row level security;
+
+create policy "Teachers can view student completions"
+  on student_completions for select using (
+    exists (
+      select 1 from todos
+      join assignments on assignments.id = todos.assignment_id
+      join rooms on rooms.id = assignments.room_id
+      where todos.id = student_completions.todo_id
+        and rooms.teacher_id = auth.uid()
+    )
+  );
+
+create policy "Students can manage their own completions"
+  on student_completions for all using (auth.uid() = student_id);
+
+-- ─── 8. Storage Bucket ───────────────────────────────────────────────────────
 insert into storage.buckets (id, name, public)
 values ('submissions', 'submissions', false)
 on conflict (id) do nothing;
@@ -204,7 +230,7 @@ create policy "Users can delete their own uploads"
   on storage.objects for delete
   using (bucket_id = 'submissions' and auth.role() = 'authenticated');
 
--- ─── 8. Realtime ──────────────────────────────────────────────────────────────
+-- ─── 9. Realtime ──────────────────────────────────────────────────────────────
 do $$ 
 begin
   if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and tablename = 'rooms') then
@@ -221,5 +247,8 @@ begin
   end if;
   if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and tablename = 'submissions') then
     alter publication supabase_realtime add table submissions;
+  end if;
+  if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and tablename = 'student_completions') then
+    alter publication supabase_realtime add table student_completions;
   end if;
 end $$;

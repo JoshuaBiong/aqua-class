@@ -49,28 +49,34 @@ function AppRoutes() {
   const navRef = useRef(navigate);
   navRef.current = navigate;
 
+  console.log("[AppRoutes] render — loading:", loading, "session:", !!session, "profile:", !!profile, "profileLoaded:", profileLoaded, "authError:", authError);
+
   const loadProfile = useCallback(async (uid) => {
+    console.log("[loadProfile] starting for uid:", uid);
     try {
-      const { data, error } = await supabase
-        .from("profiles")
-        .select("*")
-        .eq("id", uid)
-        .maybeSingle();
+      // Race the query against a 7-second timeout to prevent infinite hangs
+      const result = await Promise.race([
+        supabase.from("profiles").select("*").eq("id", uid).maybeSingle(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Profile query timed out after 7s")), 7000))
+      ]);
+      const { data, error } = result;
       if (error) {
-        console.error("loadProfile error:", error);
+        console.error("[loadProfile] supabase error:", error);
         setAuthError("Could not load profile: " + error.message);
         setProfileLoaded(true);
         return null;
       }
       if (data) {
+        console.log("[loadProfile] profile loaded:", data.role, data.name);
         setProfile(data);
         setProfileLoaded(true);
         return data;
       }
+      console.warn("[loadProfile] no profile found for uid:", uid);
       setProfileLoaded(true);
       return null;
     } catch (err) {
-      console.error("loadProfile exception:", err);
+      console.error("[loadProfile] exception:", err);
       setAuthError("Could not load profile: " + err.message);
       setProfileLoaded(true);
       return null;
@@ -84,6 +90,12 @@ function AppRoutes() {
     await loadProfile(session.user.id);
   }, [session, loadProfile]);
 
+  const handleRetryAuth = useCallback(() => {
+    setAuthError(null);
+    setLoading(true);
+    window.location.reload();
+  }, []);
+
   const handleSignOut = useCallback(async () => {
     await supabase.auth.signOut();
     setSession(null);
@@ -93,56 +105,63 @@ function AppRoutes() {
     navRef.current("/");
   }, []);
 
+  // Safety-net timeout: always fires if loading is stuck for 12s
   useEffect(() => {
-    let mounted = true;
+    if (!loading) return;
+    const timeout = setTimeout(() => {
+      console.error("[AppRoutes] ⚠️ SAFETY TIMEOUT: still loading after 12 seconds.");
+      setLoading(false);
+      setAuthError("Loading timed out. Supabase may be unreachable. Check your network connection.");
+    }, 12000);
+    return () => clearTimeout(timeout);
+  }, [loading]);
 
-    supabase.auth.getSession().then(async ({ data: { session: existingSession } }) => {
-      if (!mounted) return;
-      setSession(existingSession);
-      if (existingSession) {
-        try {
-          const prof = await loadProfile(existingSession.user.id);
-          if (prof && mounted) {
-            const path = window.location.pathname;
-            if (path === "/" || path === "/login") {
-              navRef.current(prof.role === "teacher" ? "/teacher" : "/student");
-            }
-          }
-        } catch (err) {
-          console.error("Initial session error:", err);
-          if (mounted) setAuthError("Auth error: " + err.message);
-        }
-      }
-      if (mounted) setLoading(false);
-    });
+  // Auth: onAuthStateChange sets session only — does NOT await anything
+  useEffect(() => {
+    console.log("[AppRoutes] subscribing to onAuthStateChange...");
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, newSession) => {
-      if (!mounted) return;
-      if (event === "INITIAL_SESSION") return;
-      setSession(newSession);
-      if (newSession) {
-        try {
-          const prof = await loadProfile(newSession.user.id);
-          if (prof && mounted) {
-            navRef.current(prof.role === "teacher" ? "/teacher" : "/student");
-          }
-        } catch (err) {
-          console.error("Auth change error:", err);
-          if (mounted) setAuthError("Auth error: " + err.message);
-        }
-      } else {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, newSession) => {
+      console.log("[AppRoutes] onAuthStateChange event:", event, "newSession:", !!newSession);
+      setSession(newSession || null);
+
+      if (!newSession) {
         setProfile(null);
         setProfileLoaded(false);
-        if (mounted) setLoading(false);
-        navRef.current("/");
+        if (event !== "INITIAL_SESSION") {
+          navRef.current("/");
+        }
+        setLoading(false);
       }
+      // If newSession exists, the useEffect below will handle profile loading
     });
 
-    return () => {
-      mounted = false;
-      subscription.unsubscribe();
-    };
-  }, [loadProfile]);
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // Profile loading: reacts to session changes (runs OUTSIDE the auth callback)
+  useEffect(() => {
+    if (session === undefined) return; // not yet checked
+    if (!session) {
+      // No session — done loading
+      setLoading(false);
+      return;
+    }
+    // Session exists — load profile
+    let cancelled = false;
+    console.log("[AppRoutes] session detected, loading profile...");
+    loadProfile(session.user.id).then(prof => {
+      if (cancelled) return;
+      console.log("[AppRoutes] loadProfile returned:", prof ? prof.role : null);
+      if (prof) {
+        const path = window.location.pathname;
+        if (path === "/" || path === "/login") {
+          navRef.current(prof.role === "teacher" ? "/teacher" : "/student");
+        }
+      }
+      setLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [session, loadProfile]);
 
   // Show spinner until initial session check is done
   if (loading) return <LoadingScreen />;
@@ -155,7 +174,7 @@ function AppRoutes() {
         <h3 style={{ color: "var(--ocean-pale)", marginBottom: 8 }}>Something went wrong</h3>
         <p style={{ color: "rgba(168,216,234,.6)", fontSize: 14, marginBottom: 20 }}>{authError}</p>
         <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
-          <button className="ocean-btn btn-primary" onClick={() => { setAuthError(null); setLoading(true); window.location.reload(); }}>
+          <button className="ocean-btn btn-primary" onClick={handleRetryAuth}>
             Try Again
           </button>
           <button className="ocean-btn btn-ghost" onClick={handleSignOut}>Sign Out</button>

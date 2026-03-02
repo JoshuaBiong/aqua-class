@@ -15,6 +15,7 @@ export function LoginPage({ loadProfile }) {
   const navigate = useNavigate();
 
   const handleSubmit = async () => {
+    if (loading) return;
     setErr(""); setLoading(true);
     try {
       if (mode === "login") {

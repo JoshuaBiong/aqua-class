@@ -15,6 +15,10 @@ export function AquariumRoom({ userId, userRole }) {
   const simRef     = useRef(null);
   const rafRef     = useRef(null);
   const roomRef    = useRef(null);
+  const roleRef    = useRef(userRole);
+  const userIdRef  = useRef(userId);
+  const resizeRef  = useRef(null);
+  const canvasInitialized = useRef(false);
 
   const [room, setRoom]             = useState(null);
   const [loading, setLoading]       = useState(true);
@@ -50,7 +54,7 @@ export function AquariumRoom({ userId, userRole }) {
       setLoadError(null);
       const { data, error } = await supabase
         .from("rooms")
-        .select(`*, assignments(*, todos(*, submissions(*)))`)
+        .select(`*, room_members(student_id), assignments(*, todos(*, submissions(*), student_completions(*)))`)
         .eq("id", roomId)
         .maybeSingle();
       if (error) throw error;
@@ -80,19 +84,121 @@ export function AquariumRoom({ userId, userRole }) {
     return () => supabase.removeChannel(ch);
   }, [roomId, loadRoom]);
 
-  // ── Canvas init ─────────────────────────────────────────────────────────────
-  useEffect(() => {
-    if (!canvasRef.current) return;
-    const canvas = canvasRef.current;
-    canvas.width = window.innerWidth; canvas.height = window.innerHeight;
-    const cw=canvas.width,ch=canvas.height;
-    simRef.current = { mouseX:cw/2,mouseY:ch/2,mouseActive:false,mouseTimer:null,cageArea:{x:cw-220,y:ch-190,w:200,h:165},fishMap:new Map() };
-    const onResize=()=>{canvas.width=window.innerWidth;canvas.height=window.innerHeight;if(simRef.current)simRef.current.cageArea={x:canvas.width-220,y:canvas.height-190,w:200,h:165};};
-    window.addEventListener("resize",onResize);
-    return ()=>window.removeEventListener("resize",onResize);
+  // ── Canvas callback ref — fires when canvas actually mounts in DOM ──────────
+  const canvasRefCallback = useCallback((canvas) => {
+    if (!canvas) return;
+    canvasRef.current = canvas;
+
+    // Size the canvas to fill the window
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    const cw = canvas.width, ch = canvas.height;
+
+    // Initialize simulation state
+    simRef.current = {
+      mouseX: cw / 2, mouseY: ch / 2, mouseActive: false, mouseTimer: null,
+      cageArea: { x: cw - 220, y: ch - 190, w: 200, h: 165 },
+      fishMap: new Map()
+    };
+
+    // Sync fish map immediately if room is already loaded
+    if (roomRef.current) {
+      const assignments = roomRef.current.assignments || [];
+      assignments.forEach(a => {
+        if (!simRef.current.fishMap.has(a.id)) {
+          simRef.current.fishMap.set(a.id, new FishSim(cw, ch));
+        }
+      });
+    }
+
+    // Resize handler
+    const onResize = () => {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+      if (simRef.current) {
+        simRef.current.cageArea = { x: canvas.width - 220, y: canvas.height - 190, w: 200, h: 165 };
+      }
+    };
+    resizeRef.current = onResize;
+    window.addEventListener("resize", onResize);
+
+    // Start animation loop
+    const ctx = canvas.getContext("2d");
+    const loop = ts => {
+      if (!simRef.current || !roomRef.current) {
+        rafRef.current = requestAnimationFrame(loop);
+        return;
+      }
+      const { mouseX, mouseY, mouseActive, cageArea, fishMap } = simRef.current;
+      const r = roomRef.current, cw2 = canvas.width, ch2 = canvas.height;
+      ctx.clearRect(0, 0, cw2, ch2);
+      drawOceanBg(ctx, cw2, ch2, ts);
+      drawSeaweed(ctx, cw2, ch2, ts);
+      const assignments = r.assignments || [];
+      const memberCount = (r.room_members || []).length;
+      const isTeacherView = roleRef.current === "teacher";
+      const currentUserId = userIdRef.current;
+
+      // Determine isDone per assignment based on role
+      const getIsDone = (asgn) => {
+        const todos = asgn.todos || [];
+        if (todos.length === 0) return false;
+        if (!isTeacherView) {
+          // Student: done when this student has completions for ALL todos
+          return todos.every(t => (t.student_completions || []).some(c => c.student_id === currentUserId));
+        } else {
+          // Teacher: done when every room member has completions for ALL todos
+          if (memberCount === 0) return false;
+          return todos.every(t => {
+            const completedStudents = new Set((t.student_completions || []).map(c => c.student_id));
+            return completedStudents.size >= memberCount;
+          });
+        }
+      };
+
+      const doneCnt = assignments.filter(a => getIsDone(a)).length;
+      drawCage(ctx, cageArea, doneCnt);
+      assignments.forEach(asgn => {
+        const fish = fishMap.get(asgn.id); if (!fish) return;
+        const todos = asgn.todos || [];
+        // Size based on total todos vs completed (student's own completions for size)
+        const completedCount = isTeacherView
+          ? todos.filter(t => { const s = new Set((t.student_completions || []).map(c => c.student_id)); return s.size >= memberCount; }).length
+          : todos.filter(t => (t.student_completions || []).some(c => c.student_id === currentUserId)).length;
+        const size = calcSize(todos.length, completedCount);
+        const isDone = getIsDone(asgn);
+        fish.update({ mouseX, mouseY, mouseActive, isDone, cageArea, cw: cw2, ch: ch2, size });
+
+        let label;
+        if (isTeacherView && memberCount > 0 && todos.length > 0) {
+          // Show how many students have completed ALL todos for this assignment
+          const studentsComplete = (r.room_members || []).filter(m => {
+            return todos.every(t => (t.student_completions || []).some(c => c.student_id === m.student_id));
+          }).length;
+          label = isDone ? asgn.name : `${asgn.name} (${studentsComplete}/${memberCount})`;
+        } else {
+          const pending = todos.length - completedCount;
+          label = pending > 0 ? `${asgn.name} (${pending})` : asgn.name;
+        }
+
+        const color = FISH_COLORS[(asgn.color_index || 0) % FISH_COLORS.length] || FISH_COLORS[0];
+        drawFish(ctx, fish, color, size, label, fish.dialogAlpha);
+      });
+      rafRef.current = requestAnimationFrame(loop);
+    };
+    rafRef.current = requestAnimationFrame(loop);
+    canvasInitialized.current = true;
   }, []);
 
-  // ── Sync fish map ────────────────────────────────────────────────────────────
+  // ── Cleanup animation frame + resize on unmount ─────────────────────────────
+  useEffect(() => {
+    return () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      if (resizeRef.current) window.removeEventListener("resize", resizeRef.current);
+    };
+  }, []);
+
+  // ── Sync fish map when room data changes ────────────────────────────────────
   useEffect(() => {
     if (!simRef.current || !room) return;
     const { fishMap } = simRef.current;
@@ -110,65 +216,37 @@ export function AquariumRoom({ userId, userRole }) {
 
   // ── Mouse ────────────────────────────────────────────────────────────────────
   useEffect(() => {
-    const onMove=e=>{
-      setCursor({x:e.clientX,y:e.clientY});
-      if(!simRef.current||!roomRef.current)return;
-      const s=simRef.current;s.mouseX=e.clientX;s.mouseY=e.clientY;s.mouseActive=true;
-      clearTimeout(s.mouseTimer);s.mouseTimer=setTimeout(()=>s.mouseActive=false,2000);
-      s.fishMap.forEach(f=>f.hovered=false);
-      (roomRef.current.assignments || []).forEach(a=>{
-        const fish=s.fishMap.get(a.id);if(!fish)return;
-        const todos=a.todos||[];
-        const size=calcSize(todos.length,todos.filter(t=>t.done).length);
-        fish.hovered=fish.contains(e.clientX,e.clientY,size);
+    const onMove = e => {
+      setCursor({ x: e.clientX, y: e.clientY });
+      if (!simRef.current || !roomRef.current) return;
+      const s = simRef.current; s.mouseX = e.clientX; s.mouseY = e.clientY; s.mouseActive = true;
+      clearTimeout(s.mouseTimer); s.mouseTimer = setTimeout(() => s.mouseActive = false, 2000);
+      s.fishMap.forEach(f => f.hovered = false);
+      (roomRef.current.assignments || []).forEach(a => {
+        const fish = s.fishMap.get(a.id); if (!fish) return;
+        const todos = a.todos || [];
+        const size = calcSize(todos.length, todos.filter(t => t.done).length);
+        fish.hovered = fish.contains(e.clientX, e.clientY, size);
       });
     };
-    document.addEventListener("mousemove",onMove);
-    return()=>document.removeEventListener("mousemove",onMove);
-  },[]);
+    document.addEventListener("mousemove", onMove);
+    return () => document.removeEventListener("mousemove", onMove);
+  }, []);
 
   // ── Canvas click ─────────────────────────────────────────────────────────────
-  const handleCanvasClick = useCallback(e=>{
-    if(!simRef.current||!roomRef.current)return;
-    const px=e.clientX,py=e.clientY;
-    for(const asgn of (roomRef.current.assignments || [])){
-      const fish=simRef.current.fishMap.get(asgn.id);if(!fish)continue;
-      const todos=asgn.todos||[];
-      const size=calcSize(todos.length,todos.filter(t=>t.done).length);
-      if(fish.contains(px,py,size)){
-        fish.excited=true;fish.exciteTimer=120;fish.exciteX=px;fish.exciteY=py;
-        setTimeout(()=>setModalAsgnId(asgn.id),200);return;
+  const handleCanvasClick = useCallback(e => {
+    if (!simRef.current || !roomRef.current) return;
+    const px = e.clientX, py = e.clientY;
+    for (const asgn of (roomRef.current.assignments || [])) {
+      const fish = simRef.current.fishMap.get(asgn.id); if (!fish) continue;
+      const todos = asgn.todos || [];
+      const size = calcSize(todos.length, todos.filter(t => t.done).length);
+      if (fish.contains(px, py, size)) {
+        fish.excited = true; fish.exciteTimer = 120; fish.exciteX = px; fish.exciteY = py;
+        setTimeout(() => setModalAsgnId(asgn.id), 200); return;
       }
     }
-  },[]);
-
-  // ── Animation loop ───────────────────────────────────────────────────────────
-  useEffect(() => {
-    if (!canvasRef.current) return;
-    const canvas=canvasRef.current,ctx=canvas.getContext("2d");
-    const loop=ts=>{
-      if(!simRef.current||!roomRef.current){rafRef.current=requestAnimationFrame(loop);return;}
-      const{mouseX,mouseY,mouseActive,cageArea,fishMap}=simRef.current;
-      const r=roomRef.current,cw=canvas.width,ch=canvas.height;
-      ctx.clearRect(0,0,cw,ch);drawOceanBg(ctx,cw,ch,ts);drawSeaweed(ctx,cw,ch,ts);
-      const assignments = r.assignments || [];
-      const doneCnt=assignments.filter(a=>{const t=a.todos||[];return t.length>0&&t.every(x=>x.done);}).length;
-      drawCage(ctx,cageArea,doneCnt);
-      assignments.forEach(asgn=>{
-        const fish=fishMap.get(asgn.id);if(!fish)return;
-        const todos=asgn.todos||[];
-        const done=todos.filter(t=>t.done).length,size=calcSize(todos.length,done);
-        const isDone=todos.length>0&&done===todos.length;
-        fish.update({mouseX,mouseY,mouseActive,isDone,cageArea,cw,ch,size});
-        const pending=todos.filter(t=>!t.done).length;
-        const color = FISH_COLORS[(asgn.color_index || 0) % FISH_COLORS.length] || FISH_COLORS[0];
-        drawFish(ctx, fish, color, size, pending > 0 ? `${asgn.name} (${pending})` : asgn.name, fish.dialogAlpha);
-      });
-      rafRef.current=requestAnimationFrame(loop);
-    };
-    rafRef.current=requestAnimationFrame(loop);
-    return()=>cancelAnimationFrame(rafRef.current);
-  },[]);
+  }, []);
 
   // ── ESC ──────────────────────────────────────────────────────────────────────
   useEffect(()=>{
@@ -204,8 +282,19 @@ export function AquariumRoom({ userId, userRole }) {
   };
 
   const toggleTodo = async (todoId, currentDone) => {
-    const { error } = await supabase.from("todos").update({done:!currentDone}).eq("id",todoId);
-    if (error) setActionError("Failed to update todo: " + error.message);
+    if (isTeacher) return; // Teachers cannot toggle
+    if (currentDone) {
+      // Uncheck: delete from student_completions
+      const { error } = await supabase.from("student_completions").delete()
+        .eq("todo_id", todoId).eq("student_id", userId);
+      if (error) setActionError("Failed to update todo: " + error.message);
+    } else {
+      // Check: insert into student_completions
+      const { error } = await supabase.from("student_completions").insert({
+        todo_id: todoId, student_id: userId
+      });
+      if (error) setActionError("Failed to update todo: " + error.message);
+    }
   };
 
   const deleteAssignment = async (asgnId) => {
@@ -297,7 +386,7 @@ export function AquariumRoom({ userId, userRole }) {
   return (
     <div style={{position:"relative",width:"100vw",height:"100vh",overflow:"hidden",cursor:"none"}}>
       <div style={{position:"fixed",left:cursor.x,top:cursor.y,width:18,height:18,borderRadius:"50%",background:"rgba(168,216,234,.3)",border:"2px solid rgba(168,216,234,.7)",pointerEvents:"none",transform:"translate(-50%,-50%)",zIndex:9999}}/>
-      <canvas ref={canvasRef} style={{position:"absolute",top:0,left:0}} onClick={handleCanvasClick}/>
+      <canvas ref={canvasRefCallback} style={{position:"absolute",top:0,left:0,width:"100%",height:"100%"}} onClick={handleCanvasClick}/>
 
       {/* Action error toast */}
       {actionError && (
@@ -436,17 +525,24 @@ export function AquariumRoom({ userId, userRole }) {
             <div style={{fontSize:11,fontWeight:700,color:"rgba(168,216,234,.5)",textTransform:"uppercase",letterSpacing:".07em",marginBottom:10}}>Todo Items</div>
             {currentModalAsgn.todos.length===0 ? (
               <p style={{fontSize:13,color:"rgba(168,216,234,.35)",padding:"16px 0",textAlign:"center"}}>No todos yet.</p>
-            ) : currentModalAsgn.todos.map(todo=>(
+            ) : currentModalAsgn.todos.map(todo => {
+              const myCompletion = (todo.student_completions || []).some(c => c.student_id === userId);
+              const completionCount = (todo.student_completions || []).length;
+              const memberCount = (room.room_members || []).length;
+              return (
               <TodoItem
-                key={todo.id} todo={todo} colors={colors}
+                key={todo.id} todo={{...todo, done: isTeacher ? (memberCount > 0 && completionCount >= memberCount) : myCompletion}} colors={colors}
                 isTeacher={isTeacher} userId={userId}
-                onToggle={()=>toggleTodo(todo.id,todo.done)}
-                onSubmitFile={(file)=>submitFile(todo.id,file)}
-                onRemoveFile={(subId,path)=>removeFile(subId,path,todo.id)}
-                onDeleteTodo={()=>deleteTodo(todo.id)}
+                onToggle={() => toggleTodo(todo.id, myCompletion)}
+                onSubmitFile={(file) => submitFile(todo.id, file)}
+                onRemoveFile={(subId, path) => removeFile(subId, path, todo.id)}
+                onDeleteTodo={() => deleteTodo(todo.id)}
                 getSignedUrl={getSignedUrl}
+                completionCount={completionCount}
+                memberCount={memberCount}
               />
-            ))}
+              );
+            })}
           </div>
 
           {isTeacher && (
