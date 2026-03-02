@@ -1,8 +1,8 @@
 // ─── Canvas Drawing Utilities ───────────────────────────────────────────────────
 
 export function calcSize(total,done){
-  if(total===0)return 26;
-  return Math.min(26+total*7,85)*(1-(done/total)*.5);
+  if(total===0)return 30;
+  return Math.min(30+total*15,140)*(1-(done/total)*.4);
 }
 
 export function drawOceanBg(ctx,w,h,t){

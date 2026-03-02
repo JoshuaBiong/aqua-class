@@ -289,10 +289,11 @@ export function AquariumRoom({ userId, userRole }) {
         .eq("todo_id", todoId).eq("student_id", userId);
       if (error) setActionError("Failed to update todo: " + error.message);
     } else {
-      // Check: insert into student_completions
-      const { error } = await supabase.from("student_completions").insert({
-        todo_id: todoId, student_id: userId
-      });
+      // Check: upsert into student_completions (ignores duplicates to prevent 409 errors)
+      const { error } = await supabase.from("student_completions").upsert(
+        { todo_id: todoId, student_id: userId },
+        { onConflict: 'todo_id, student_id', ignoreDuplicates: true }
+      );
       if (error) setActionError("Failed to update todo: " + error.message);
     }
   };
@@ -303,6 +304,15 @@ export function AquariumRoom({ userId, userRole }) {
     const { error } = await supabase.from("assignments").delete().eq("id", asgnId);
     if (error) { setActionError("Failed to delete assignment: " + error.message); return; }
     setModalAsgnId(null);
+  };
+
+  const deleteRoom = async () => {
+    if (!confirm(`Are you sure you want to delete the aquarium "${room.name}"? This will delete all assignments, todos, and submissions inside it. This action cannot be undone.`)) return;
+    setSaving(true); setActionError(null);
+    const { error } = await supabase.from("rooms").delete().eq("id", roomId);
+    setSaving(false);
+    if (error) { setActionError("Failed to delete room: " + error.message); return; }
+    navigate("/teacher");
   };
 
   const deleteTodo = async (todoId) => {
@@ -417,9 +427,12 @@ export function AquariumRoom({ userId, userRole }) {
 
       {/* ── Sidebar ── */}
       <div style={{position:"fixed",right:sidebarOpen?0:-380,top:0,width:360,height:"100vh",background:"rgba(6,21,36,.95)",backdropFilter:"blur(20px)",borderLeft:"1px solid rgba(168,216,234,.12)",transition:"right .4s cubic-bezier(.34,1.56,.64,1)",zIndex:100,display:"flex",flexDirection:"column"}}>
-        <div style={{padding:"72px 24px 20px",borderBottom:"1px solid rgba(168,216,234,.1)"}}>
-          <h2 style={{fontFamily:"'Baloo 2',cursive",fontSize:22,color:"var(--ocean-pale)",marginBottom:4}}>🌊 {room.name}</h2>
-          <p style={{fontSize:12,color:"rgba(168,216,234,.45)"}}>{room.description}</p>
+        <div style={{padding:"72px 24px 20px",borderBottom:"1px solid rgba(168,216,234,.1)",display:"flex",alignItems:"flex-start",justifyContent:"space-between"}}>
+          <div style={{flex:1,paddingRight:12}}>
+            <h2 style={{fontFamily:"'Baloo 2',cursive",fontSize:22,color:"var(--ocean-pale)",marginBottom:4,lineHeight:1.1}}>🌊 {room.name}</h2>
+            <p style={{fontSize:12,color:"rgba(168,216,234,.45)"}}>{room.description}</p>
+          </div>
+          <button onClick={()=>setSidebarOpen(false)} style={{background:"rgba(255,255,255,.05)",border:"none",color:"rgba(168,216,234,.5)",width:28,height:28,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",fontSize:13,transition:"all .2s"}}>✕</button>
         </div>
         <div style={{flex:1,overflowY:"auto",padding:"16px 24px"}}>
           {isTeacher && (
@@ -464,6 +477,14 @@ export function AquariumRoom({ userId, userRole }) {
             );
           })}
         </div>
+        
+        {isTeacher && (
+          <div style={{padding:"20px 24px",borderTop:"1px solid rgba(255,107,107,.15)",background:"rgba(255,107,107,.03)"}}>
+            <button className="ocean-btn" style={{width:"100%",fontSize:13,padding:"10px",background:"rgba(255,107,107,.1)",color:"#ff6b6b",border:"1px solid rgba(255,107,107,.2)"}} onClick={deleteRoom} disabled={saving}>
+              {saving?"Deleting...":"🗑️ Delete Aquarium"}
+            </button>
+          </div>
+        )}
       </div>
 
       {/* ── New Assignment Modal ── */}
